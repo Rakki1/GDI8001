@@ -537,7 +537,15 @@ int timexforch1tm_year4ml = 0;
 int tofs = 0;
 
 void rtcstrobe() { switch (pch & 0xF) { case 1:timerforch123 = time(0) + tofs; timey = localtime(&timerforch123); rtctimeforminusck2[0] = timey->tm_sec; rtctimeforminusck2[1] = timey->tm_min; rtctimeforminusck2[2] = timey->tm_hour; rtctimeforminusck2[3] = timey->tm_mday; rtctimeforminusck2[4] = timey->tm_mon + 1; rtcpos = 0; rtctime[4] = rtctimeforminusck2[4] << 4; rtctime[3] = ((rtctimeforminusck2[3] / 10) << 4) + rtctimeforminusck2[3] % 10; rtctime[2] = ((rtctimeforminusck2[2] / 10) << 4) + rtctimeforminusck2[2] % 10; rtctime[1] = ((rtctimeforminusck2[1] / 10) << 4) + rtctimeforminusck2[1] % 10; rtctime[0] = ((rtctimeforminusck2[0] / 10) << 4) + rtctimeforminusck2[0] % 10; rtcdata = rtctime[0] & 0x01; break; case 2: for (int cnt = 0; cnt < 5; cnt++) { if (cnt != 4) { rtctime[cnt] = rtctimetmp[cnt]; } else { rtctime[cnt] = (rtctimetmp[cnt] - 1); } }for (int cnt = 0; cnt < 5; cnt++) { if (cnt != 4) { rtctimeforminus[cnt] = (((rtctime[cnt] >> 4) * 10) + (rtctime[cnt] & 15)); } else { rtctimeforminus[cnt] = (rtctime[cnt] >> 4); } } timezforch1.tm_sec = rtctimeforminus[0] % 60; timezforch1.tm_min = rtctimeforminus[1] % 60; timezforch1.tm_hour = rtctimeforminus[2] % 24; timezforch1.tm_mday = rtctimeforminus[3] % 32; timezforch1.tm_mon = ((rtctimeforminus[4] - 1) % 12) + 1; timezforch1.tm_year = 71; tofs = mktime(&timezforch1) - time(0); break; } }
-void rtcshift() { if (rtcpos < 40) { if ((pch >> 3 & 1)) { rtctimetmp[rtcpos >> 3] |= (pch >> 3 & 1) << (rtcpos & 7); } else { rtctimetmp[rtcpos >> 3] &= ~(1 << (rtcpos & 7)); }rtcpos += 1; rtcdata = (rtctime[rtcpos >> 3] >> (rtcpos & 7) & 1) ? true : false; }  }
+void rtcshift() {
+    if (rtcpos < 40) {
+        if ((pch >> 3 & 1)) { rtctimetmp[rtcpos >> 3] |= (pch >> 3 & 1) << (rtcpos & 7); }
+        else { rtctimetmp[rtcpos >> 3] &= ~(1 << (rtcpos & 7)); }
+        rtcpos += 1;
+        // After 40 clocks, the first shifted-in bit reaches the output.
+        rtcdata = ((rtcpos < 40 ? (rtctime[rtcpos >> 3] >> (rtcpos & 7)) : rtctimetmp[0]) & 1) != 0;
+    }
+}
 void prtstrobe() {if (prtenable && prtenable0 != 0 && pch != 13){}prtenable0 = prtenable;}
 
 bool cmtreseted = false;
@@ -2280,18 +2288,19 @@ int z80memaccess(int prm_0, int prm_1, int prm_2) {
             alucomp.l = ((galuop & 1) ? 0x000000ff : 0) | ((galuop & 2) ? 0x0000ff00 : 0) | ((galuop & 4) ? 0x00ff0000 : 0);
             break;
         case 0x40:
-            if (((prm_0 & 0x20) && beepenabled == false)/* || (!(prm_0 & 0x20) && beepenabled == true)*/) {
+            // Sound transitions depend on the written data, not the port address.
+            if (((prm_1 & 0x20) && beepenabled == false)/* || (!(prm_1 & 0x20) && beepenabled == true)*/) {
                 isbeepenabledinthecool = true;
                 if ((clockcount4beep - clockcount4beepprev) < F) { samplebase4beep = (((clockcount4beep - clockcount4beepprev) * ((UINT64)(SRATE))) / ((UINT64)((is8mhz ? 2 : 1) * (crtcactive ? (UINT64)1830000 : (UINT64)4000000)))) + samplebase4beeptiff; samplebase4beeptiff = samplebase4beep % F; clockcount4beepprev = clockcount4beep; }
             }
-            else if ((!(prm_0 & 0x20) && beepenabled == true)) {
+            else if ((!(prm_1 & 0x20) && beepenabled == true)) {
                 howmanybeepstopped++;
             }
             if (ispc8801 == true) {
-                if (((prm_0 & 0x80) && beepenabled2 == false)/* || (!(prm_0 & 0x80) && beepenabled2 == true)*/) {
+                if (((prm_1 & 0x80) && beepenabled2 == false)/* || (!(prm_1 & 0x80) && beepenabled2 == true)*/) {
                     isbeepenabledinthecool2 = true;
                 }
-                else if ((!(prm_0 & 0x80) && beepenabled2 == true)) {
+                else if ((!(prm_1 & 0x80) && beepenabled2 == true)) {
                     howmanybeepstopped_2++;
                 }
                 beepenabled2 = ((prm_1 >> 7) & 0x01) ? true : false;
@@ -2955,11 +2964,13 @@ void PC8012Service(LPVOID* arg4bs) {
                     driveid = recvfdcmd28001();
                     track = recvfdcmd28001();
                     sector = recvfdcmd28001();
+                    // Consume invalid transfers too, without writing past disk RAM.
+                    iserroroccruuedondu = driveid >= 4 || amountofsec > sizeof(fddcmemory) / 256;
                     for (int cnt = 0; cnt < (amountofsec * 256); cnt++) {
-                        //if ((i8255mac_GN8012(2, 0, 1) & 0x08)) { break; }
-                        fddcmemory[cnt] = recvfdcmd28001();
+                        recvsendtmp16 = recvfdcmd28001();
+                        if (iserroroccruuedondu == false) { fddcmemory[cnt] = recvsendtmp16; }
                     }
-                    if (GN8012_i8272.Diskstat[driveid].isprotected == true) {
+                    if (iserroroccruuedondu || GN8012_i8272.Diskstat[driveid].isprotected == true) {
                         iserroroccruuedondu = true;
                     }
                     else {
@@ -2974,7 +2985,9 @@ void PC8012Service(LPVOID* arg4bs) {
                     driveid = recvfdcmd28001();
                     track = recvfdcmd28001();
                     sector = recvfdcmd28001();
-                    if (GN8012_i8272.Diskstat[driveid].diskinserted == true) {
+                    // The read buffer starts at 1000h inside the 16 KiB disk RAM.
+                    if (driveid < 4 && amountofsec <= (sizeof(fddcmemory) - 0x1000) / 256 &&
+                        GN8012_i8272.Diskstat[driveid].diskinserted == true) {
                         readbufexist = true;
                         iserroroccruuedondu = false;
                         for (int cnt = 0; cnt < amountofsec; cnt++) {
@@ -2989,8 +3002,10 @@ void PC8012Service(LPVOID* arg4bs) {
                     }
                     break;
                 case 0x03:
-                    if (readbufexist == false) {
-                        while (true) { if ((i8255mac_GN8012(2, 0, 1) & 0x08)) { break; } }
+                    if (readbufexist == false || amountofsec > (sizeof(fddcmemory) - 0x1000) / 256) {
+                        readbufexist = false;
+                        iserroroccruuedondu = true;
+                        while (true) { if ((i8255mac_GN8012(2, 0, 1) & 0x08)) { break; } Sleep(1); }
                     }
                     else {
                         for (int cnt = 0; cnt < (amountofsec * 256); cnt++) {
@@ -3008,7 +3023,8 @@ void PC8012Service(LPVOID* arg4bs) {
                     driveid2 = recvfdcmd28001();
                     track2 = recvfdcmd28001();
                     sector2 = recvfdcmd28001();
-                    if (GN8012_i8272.Diskstat[driveid].diskinserted == true) {
+                    if (driveid < 4 && driveid2 < 4 &&
+                        GN8012_i8272.Diskstat[driveid].diskinserted == true) {
                         if (GN8012_i8272.Diskstat[driveid2].isprotected == true) {
                             iserroroccruuedondu = true;
                         }
@@ -3026,7 +3042,7 @@ void PC8012Service(LPVOID* arg4bs) {
                     break;
                 case 0x05:
                     driveid = recvfdcmd28001();
-                    if (GN8012_i8272.Diskstat[driveid2].isprotected == true) {
+                    if (driveid >= 4 || GN8012_i8272.Diskstat[driveid].isprotected == true) {
                         iserroroccruuedondu = true;
                     }
                     else {
@@ -3090,7 +3106,7 @@ void PC8012Service(LPVOID* arg4bs) {
                     track = recvfdcmd28001();
                     sector = recvfdcmd28001();
                     transaddr = ((recvfdcmd28001() << 8) & 0xFF00) | (recvfdcmd28001() & 0xFF);
-                    if (GN8012_i8272.Diskstat[driveid].diskinserted == true) {
+                    if (driveid < 4 && GN8012_i8272.Diskstat[driveid].diskinserted == true) {
                         iserroroccruuedondu = false;
                         for (int cnt = 0; cnt < amountofsec * 256; cnt++) {
                             fddcz80memaccess(transaddr + cnt, fddrivebus(cnt % 256, 0, (cnt / 256) + sector, ((drivemode & (1 << driveid)) ? (track / 2) : track), ((drivemode & (1 << driveid)) ? ((track % 2) ? 0x400 : 0) : 0) | ((driveid & 3) << 8) | 1), 0);
@@ -3106,7 +3122,7 @@ void PC8012Service(LPVOID* arg4bs) {
                     track = recvfdcmd28001();
                     sector = recvfdcmd28001();
                     transaddr = ((recvfdcmd28001() << 8) & 0xFF00) | (recvfdcmd28001() & 0xFF);
-                    if (GN8012_i8272.Diskstat[driveid].diskinserted == true) {
+                    if (driveid < 4 && GN8012_i8272.Diskstat[driveid].diskinserted == true) {
                         if (GN8012_i8272.Diskstat[driveid].isprotected == false) {
                             iserroroccruuedondu = false;
                             for (int cnt = 0; cnt < amountofsec * 256; cnt++) {
@@ -3126,13 +3142,15 @@ void PC8012Service(LPVOID* arg4bs) {
                     driveid = recvfdcmd28001();
                     track = recvfdcmd28001();
                     sector = recvfdcmd28001();
+                    iserroroccruuedondu = driveid >= 4 || amountofsec > sizeof(fddcmemory) / 256;
                     for (int cnt = 0; cnt < (amountofsec * 128); cnt++) {
-                        //if ((i8255mac_GN8012(2, 0, 1) & 0x08)) { break; }
                         recvsendtmp16 = recvfdcmd28001w();
-                        fddcmemory[(cnt * 2) + 0] = (recvsendtmp16 >> (8 * 0)) & 0xFF;
-                        fddcmemory[(cnt * 2) + 1] = (recvsendtmp16 >> (8 * 1)) & 0xFF;
+                        if (iserroroccruuedondu == false) {
+                            fddcmemory[(cnt * 2) + 0] = (recvsendtmp16 >> (8 * 0)) & 0xFF;
+                            fddcmemory[(cnt * 2) + 1] = (recvsendtmp16 >> (8 * 1)) & 0xFF;
+                        }
                     }
-                    if (GN8012_i8272.Diskstat[driveid].isprotected == true) {
+                    if (iserroroccruuedondu || GN8012_i8272.Diskstat[driveid].isprotected == true) {
                         iserroroccruuedondu = true;
                     }
                     else {
@@ -3143,8 +3161,10 @@ void PC8012Service(LPVOID* arg4bs) {
                     }
                     break;
                 case 0x12:
-                    if (readbufexist == false) {
-                        while (true) { if ((i8255mac_GN8012(2, 0, 1) & 0x08)) { break; } }
+                    if (readbufexist == false || amountofsec > (sizeof(fddcmemory) - 0x1000) / 256) {
+                        readbufexist = false;
+                        iserroroccruuedondu = true;
+                        while (true) { if ((i8255mac_GN8012(2, 0, 1) & 0x08)) { break; } Sleep(1); }
                     }
                     else {
                         for (int cnt = 0; cnt < (amountofsec * 128); cnt++) {
@@ -3166,6 +3186,11 @@ void PC8012Service(LPVOID* arg4bs) {
                     break;
                 case 0x14:
                     driveid = recvfdcmd28001();
+                    if (driveid >= 4) {
+                        iserroroccruuedondu = true;
+                        sendfdcmd28001(0x80);
+                        break;
+                    }
                     sendfdcmd28001((driveid & 3) | ((track == 0) ? 0x10 : 0) | ((track % 2) ? 0x04 : 0) | (GN8012_i8272.Diskstat[driveid].isprotected ? 0x40 : 0) | ((drivemode & (1 << driveid)) ? 0x08 : 0) | 0x20);
                     break;
                 case 0x15:
@@ -3580,6 +3605,8 @@ uint8 colorbool[25];
 uint8 charattributefinal = 0;
 
 void DrawGrp() {
+    // Clip drawing to the fixed 80-column attribute buffer.
+    int drawcolumns = _min(linecharnum + 2, 80);
     charattribute = 0;
     if (ispc8801 == true) {
         for (int cnt = 0; cnt < 8; cnt++) { DeleteObject(hBackGround[cnt + 64]); DeleteObject(hBackGround[cnt + 64 + 128]); DeleteObject(hBackGround[cnt + 72]); DeleteObject(hBackGround[cnt + 72 + 128]); hBackGround[cnt + 64] = CreateSolidBrush(RGB(((palette512_8bt[cnt][0] >> 3) & 7) * 73 / 2, ((palette512_8bt[cnt][1] >> 0) & 7) * 73 / 2, ((palette512_8bt[cnt][0] >> 0) & 7) * 73 / 2)); hBackGround[cnt + 72] = CreateSolidBrush(RGB(((palette512_8bt[cnt][2] >> 3) & 7) * 73 / 2, ((palette512_8bt[cnt][3] >> 0) & 7) * 73 / 2, ((palette512_8bt[cnt][2] >> 0) & 7) * 73 / 2)); hBackGround[cnt + 64 + 128] = CreateSolidBrush(RGB(0, (((((((palette512_8bt[cnt][0] >> 3) & 7) + 1) * 28) * 77) + (((((palette512_8bt[cnt][1] >> 0) & 7) + 1) * 28) * 151) + (((((palette512_8bt[cnt][0] >> 0) & 7) + 1) * 28) * 28)) / 256) + 3, 0)); hBackGround[cnt + 72 + 128] = CreateSolidBrush(RGB(0, (((((((palette512_8bt[cnt][2] >> 3) & 7) + 1) * 28) * 77) + (((((palette512_8bt[cnt][3] >> 0) & 7) + 1) * 28) * 151) + (((((palette512_8bt[cnt][2] >> 0) & 7) + 1) * 28) * 28)) / 256), 0)); cBackGround[cnt + 64] = GetBrushColor(hBackGround[cnt + 64]); cBackGround[cnt + 72] = GetBrushColor(hBackGround[cnt + 72]); cBackGround[cnt + 64 + 128] = GetBrushColor(hBackGround[cnt + 64 + 128]); cBackGround[cnt + 72 + 128] = GetBrushColor(hBackGround[cnt + 72 + 128]); }
@@ -3646,7 +3673,8 @@ void DrawGrp() {
 
                 if (ispc8801 == true) {
                     for (int drawbacky = 0; drawbacky < ((grpheight25 || ((colorfullgraphicmode == true && hiresgrpresol200 == true) && ispc8801 == true)) ? 25 : 20); drawbacky++) {
-                        for (int drawbackx = 0; drawbackx < (pc8001widthflag ? (linecharnum + 2) : ((linecharnum + 2) / 2)); drawbackx++) {
+                        for (int drawbackx = 0;
+                             drawbackx < (pc8001widthflag ? drawcolumns : (drawcolumns / 2)); drawbackx++) {
                             if (colorfullgraphicmode == true && hiresgrpresol200 == true) {
                                 //SetPalette4emu2(((UINT32)palette512_8bt[0][0] & 0x3F) | (((UINT32)palette512_8bt[0][1] & 0x7) << 6));
                                 SetPalette4emu(64);
@@ -3747,22 +3775,27 @@ void DrawGrp() {
                     if (crtmodectrl == false) { SetPalette4emu(32 + bgcolor); }
                     else { SetPalette4emu(32 + 8); }
                     for (int drawbacky = 0; drawbacky < (grpheight25 ? 25 : 20); (linespace ? (drawbacky += 2) : (drawbacky++))) {
-                        for (int drawbackx = 0; drawbackx < (pc8001widthflag ? (linecharnum + 2) : ((linecharnum + 2) / 2)); drawbackx++) {
+                        for (int drawbackx = 0;
+                             drawbackx < (pc8001widthflag ? drawcolumns : (drawcolumns / 2)); drawbackx++) {
                             if (((chkedbb8 * 0xbb8) + ((drawbackx * (pc8001widthflag ? 1 : 2)) + ((drawbacky / (linespace ? 2 : 1)) * 120))) > (dmatc[2] & 0x3FFF)) { breakdowndgp = true; break; }
                             uint8 char4show = crtcmemaccess(dmaas[2] + (chkedbb8 * 0xbb8) + ((drawbackx * (pc8001widthflag ? 1 : 2)) + ((drawbacky / (linespace ? 2 : 1)) * 120)), 0, 1);
                             attributegcold = false;
                             charattribute = (graphiccodes[(80 * (drawbacky / (linespace ? 2 : 1))) + (drawbackx * (pc8001widthflag ? 1 : 2))][0]);
                             fontcolors = graphiccodes[(80 * (drawbacky / (linespace ? 2 : 1))) + (drawbackx * (pc8001widthflag ? 1 : 2))][1] & 7; grpcolors = graphiccodes[(80 * (drawbacky / (linespace ? 2 : 1))) + (drawbackx * (pc8001widthflag ? 1 : 2))][1] & 7;
+                            // Restrict both cursor shapes to their position and visible blink phase.
+                            bool cursordraw = cursx == (drawbackx * (pc8001widthflag ? 1 : 2)) && cursy == drawbacky &&
+                                (blinkai2 == false || (cursortype & 1) == 0);
                             if (((blinkai == false) || ((charattribute & 2) == 0)) && ((charattribute & 1) == 0)) {
                                 if (crtmodectrl == false) { if (charattribute & 128) { SetPalette4emu(grpcolors); } else { SetPalette4emu(fontcolors); } }
                                 else { SetPalette4emu(9); }
                                 bool rendreverted = ((charattribute & 4) ? true : false);
-                                if ((((((cursx != -1 && cursy != -1) && (cursx == (drawbackx * (pc8001widthflag ? 1 : 2)) && cursy == drawbacky)) && ((blinkai2 == false) || (cursortype == 2))) ? true : false))) { rendreverted = (rendreverted ? false : true); }
+                                if (cursordraw && (cursortype & 2)) { rendreverted = (rendreverted ? false : true); }
                                 if (linecharnum != 0){
                                     if ((charattribute & 128) || (attributegcold == true)) { for (int cnt = 0; cnt < 8; cnt++) { if (((char4show >> cnt) & 1) ^ (rendreverted ? 1 : 0)) { SetBox(((drawbackx + 0) * 8) + (4 * ((cnt / 4) + 0)) - 0, ((drawbacky + 0) * 8) + ((int)(2 * ((cnt % 4) + 0))) - 0, ((drawbackx + 0) * 8) + (4 * ((cnt / 4) + 1)) - 0, ((drawbacky + 0) * 8) + ((int)(2 * ((cnt % 4) + 1))) - 0); } } }
                                     else { /*DrawFontUS(((drawbackx + 0) * 8), ((drawbacky + 0) * 9), char4show, prevchar[drawbackx]);*/ DrawFont_(((drawbackx + 0) * 8), ((drawbacky + 0) * 8), char4show, rendreverted); prevchar[drawbackx] = char4show; }
-                                    if ((cursortype & 2) == 0) {
-                                        if (blinkai2 == false || (cursortype & 1) == 0) { SetBox(((drawbackx + 0) * 8), ((drawbacky + 0) * 8) + 6, ((drawbackx + 1) * 8) - 1, ((drawbacky + 1) * 8) - 1); }
+                                    if (cursordraw && (cursortype & 2) == 0) {
+                                        SetBox(drawbackx * 8, (drawbacky * 8) + 6,
+                                            ((drawbackx + 1) * 8) - 1, ((drawbacky + 1) * 8) - 1);
                                     }
                                     //SetPalette4emu(9); SetBox(((drawbackx + 0) * 8), ((drawbacky + 0) * 8), ((drawbackx + 1) * 8) - 0, ((drawbacky + 1) * 8) - 0);
                                     if (charattribute & 64) { SetBox(((drawbackx + 0) * 8) + 3, ((drawbacky + 0) * 8), ((drawbackx + 0) * 8) + 4, ((drawbacky + 1) * 8) - 0); }
@@ -3771,10 +3804,17 @@ void DrawGrp() {
                                 }
                             }
                             else {
-                                if ((((((cursx != -1 && cursy != -1) && (cursx == (drawbackx * (pc8001widthflag ? 1 : 2)) && cursy == drawbacky)) && ((blinkai2 == false) || (cursortype == 2))) ? true : false))) { 
+                                if (cursordraw) {
                                     if (crtmodectrl == false) { if (charattribute & 128) { SetPalette4emu(grpcolors); } else { SetPalette4emu(fontcolors); } }
                                     else { SetPalette4emu(9); }
-                                    SetBox(((drawbackx + 0) * 8), ((drawbacky + 0) * 8), ((drawbackx + 1) * 8), ((drawbacky + 1) * 8));
+                                    if (cursortype & 2) {
+                                        SetBox(drawbackx * 8, drawbacky * 8,
+                                            (drawbackx + 1) * 8, (drawbacky + 1) * 8);
+                                    }
+                                    else {
+                                        SetBox(drawbackx * 8, (drawbacky * 8) + 6,
+                                            ((drawbackx + 1) * 8) - 1, ((drawbacky + 1) * 8) - 1);
+                                    }
                                 }
                             }
                         }
@@ -4117,7 +4157,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance,
     void (*initplugin)(void*);
     char FileName4Plugin[512];
 
-    for (int cnt = 0; cnt < 16; cnt++) { memset(erom[cnt % 4][cnt / 4], 0xff, 0x2000); }
+    // Initialize all option-ROM banks before loading any ROM files.
+    memset(erom, 0xff, sizeof(erom));
 
     isloadedfddcfirmware = false;
     fddconnected = true;
@@ -4570,11 +4611,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         mousemvenabled = true;
         RECT rw4rend;
         if (bool4showwin) {
-            GetClientRect(hwnd4mw, &rw4rend);
+            if (GetClientRect(hwnd4mw, &rw4rend) == false) { break; }
         }
         else {
-            GetClientRect(HWNDfullscr, &rw4rend);
+            if (GetClientRect(HWNDfullscr, &rw4rend) == false) { break; }
         }
+        // Ignore light-pen input when the client area has no usable size.
+        if (rw4rend.right <= 0 || rw4rend.bottom <= 0) { break; }
         lp_ggxy[0] = (((((lParam >> (16 * 0)) & 0xFFFF) * (pc8001widthflag ? 80 : 40)) / rw4rend.right) + (vbi ? 0x6 : 0x36));
         lp_ggxy[1] = ((((lParam >> (16 * 1)) & 0xFFFF) * (grpheight25 ? 25 : 20)) / rw4rend.bottom);
         litepeninp = ((((vbi?0:1) << 7) | (lp_ggxy[0] & 127)) << 0) | ((lp_ggxy[1] & 63) << 8);
