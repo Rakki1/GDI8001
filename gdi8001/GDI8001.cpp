@@ -1655,6 +1655,7 @@ typedef struct d88secheader {
 
 typedef struct fddcontract4rw {
     d88header flpimgheader;
+    UINT32 headersize;
     d88secheader flpimgsecheadertmp;
     UINT32 track;
     UINT32 sector;
@@ -1674,6 +1675,7 @@ i8272a GN8012_i8272;
 i8255 GN8012_i8255;
 
 int fddriveclose(int prm_0) {
+    fdd[(prm_0) & 3].headersize = sizeof(d88header);
     fdd[(prm_0) & 3].track = -1;
     fdd[(prm_0) & 3].sector = -1;
     fdd[(prm_0) & 3].sectortmpl = -1;
@@ -1718,8 +1720,20 @@ void fddriveload(int prm_0,const char* prm_1) {
     memset(&fdd[(prm_0) & 3].flpimgheader, 0, sizeof(d88header));
     if (filesize != 0) {
         fseek(fdd[(prm_0) & 3].datafile, 0, SEEK_SET);
-        if (fread(&fdd[(prm_0) & 3].flpimgheader, sizeof(d88header), 1, fdd[(prm_0) & 3].datafile) != 1 ||
-            fdd[(prm_0) & 3].flpimgheader.disksize < sizeof(d88header) ||
+        // Older D88 images have 160 track offsets and a 672-byte header.
+        if (fread(&fdd[(prm_0) & 3].flpimgheader, 0x2a0, 1, fdd[(prm_0) & 3].datafile) != 1) {
+            fddriveclose(prm_0);
+            return;
+        }
+        UINT32 firsttrack = fdd[(prm_0) & 3].flpimgheader.disksize;
+        for (int cnt = 0; cnt < 160; cnt++) {
+            UINT32 pos = fdd[(prm_0) & 3].flpimgheader.trackoffs[cnt];
+            if (pos != 0 && pos < firsttrack) { firsttrack = pos; }
+        }
+        if (firsttrack == 0x2a0) { fdd[(prm_0) & 3].headersize = 0x2a0; }
+        else if (fread(&fdd[(prm_0) & 3].flpimgheader.trackoffs[160], 16, 1,
+                       fdd[(prm_0) & 3].datafile) != 1) { fddriveclose(prm_0); return; }
+        if (fdd[(prm_0) & 3].flpimgheader.disksize < fdd[(prm_0) & 3].headersize ||
             fdd[(prm_0) & 3].flpimgheader.disksize > (UINT32)filesize) { fddriveclose(prm_0); return; }
         for (int cnt2 = 0; cnt2 < 164; cnt2++) {
             UINT32 pos = fdd[(prm_0) & 3].flpimgheader.trackoffs[cnt2];
@@ -1733,7 +1747,7 @@ void fddriveload(int prm_0,const char* prm_1) {
             // Walk records by stored data length, independently of N and density.
             UINT16 sectors = 1;
             for (int cnt = 0; cnt < sectors; cnt++) {
-                if (pos < sizeof(d88header) || pos > trackend || trackend - pos < sizeof(d88secheader)) {
+                if (pos < fdd[(prm_0) & 3].headersize || pos > trackend || trackend - pos < sizeof(d88secheader)) {
                     fddriveclose(prm_0);
                     return;
                 }
@@ -1812,6 +1826,8 @@ int fddrivebus(int prm_0, int prm_1, int prm_2, int prm_3, int prm_4) {
         }
         if (sectortmp == -1) {
             if ((prm_4 & 3) == 0) {
+                if (((prm_3 << 1) | ((prm_4 & 0x400) ? 1 : 0)) >=
+                    (fdd[(prm_4 >> 8) & 3].headersize - 32) / 4) { return 0xff; }
                 // Create only 256-byte sectors at the end of the image.
                 // The fixed-size layout must not overwrite variable-length records.
                 if (prm_2 < 1 || prm_2 > 16 || prm_0 < 0 || prm_0 >= 256) { return 0xff; }
@@ -1838,7 +1854,8 @@ int fddrivebus(int prm_0, int prm_1, int prm_2, int prm_3, int prm_4) {
                         fdd[(prm_4 >> 8) & 3].flpimgheader.trackoffs[cnt] = 0;
                     }
                     fseek(fdd[(prm_4 >> 8) & 3].datafile, 0, SEEK_SET);
-                    fwrite(&fdd[(prm_4 >> 8) & 3].flpimgheader, sizeof(d88header), 1, fdd[(prm_4 >> 8) & 3].datafile);
+                    fwrite(&fdd[(prm_4 >> 8) & 3].flpimgheader, fdd[(prm_4 >> 8) & 3].headersize, 1,
+                           fdd[(prm_4 >> 8) & 3].datafile);
                 }
                 if (fdd[(prm_4 >> 8) & 3].flpimgheader.trackoffs[(prm_3 * 2) + ((prm_4 & 0x400) ? 1 : 0)] == 0) {
                     fdd[(prm_4 >> 8) & 3].flpimgheader.trackoffs[(prm_3 * 2) + ((prm_4 & 0x400) ? 1 : 0)] = fdd[(prm_4 >> 8) & 3].flpimgheader.disksize;
@@ -1871,7 +1888,9 @@ int fddrivebus(int prm_0, int prm_1, int prm_2, int prm_3, int prm_4) {
                 }
                 fdd[(prm_4 >> 8) & 3].flpimgheader.disksize += (256 + 0x10);
                 fseek(fdd[(prm_4 >> 8) & 3].datafile, 0, SEEK_SET);
-                fwrite(&fdd[(prm_4 >> 8) & 3].flpimgheader, sizeof(d88header), 1, fdd[(prm_4 >> 8) & 3].datafile);
+                // Preserve the header size so the first sector is not overwritten.
+                fwrite(&fdd[(prm_4 >> 8) & 3].flpimgheader, fdd[(prm_4 >> 8) & 3].headersize, 1,
+                       fdd[(prm_4 >> 8) & 3].datafile);
                 sectortmp = prm_2 - 1;
                 fdd[(prm_4 >> 8) & 3].sectortmpl = sectortmp;
                 fdd[(prm_4 >> 8) & 3].sectortmpl2 = ((prm_3 * 2) + ((prm_4 & 0x400) ? 1 : 0));
@@ -1940,8 +1959,12 @@ i8255 GN80_i8255;
 i8255 GN80_i8255_2;
 
 UINT8 data4fddc[4];
+// Keep both port C halves intact across the two CPU threads.
+SRWLOCK fddppilock = SRWLOCK_INIT;
 
 int i8255mac_GN8012(int prm_0, int prm_1, int prm_2) {
+    int retval = 0xff;
+    AcquireSRWLockExclusive(&fddppilock);
     switch (prm_2 & 1) {
     case 0:
         switch (prm_0) {
@@ -1956,18 +1979,21 @@ int i8255mac_GN8012(int prm_0, int prm_1, int prm_2) {
     case 1:
         switch (prm_0) {
         case 0:
-            return data4fddc[1] & 0xFF;
+            retval = data4fddc[1] & 0xFF;
             break;
         case 2:
-            return (data4fddc[2] >> 0) & 0x0F;
+            retval = (data4fddc[2] >> 0) & 0x0F;
             break;
         }
         break;
     }
-    return 0xff;
+    ReleaseSRWLockExclusive(&fddppilock);
+    return retval;
 }
 int i8255mac_GN80(int prm_0, int prm_1, int prm_2) {
     char recvcode4debug[64];
+    int retval = 0xff;
+    AcquireSRWLockExclusive(&fddppilock);
     switch (prm_2 & 1) {
     case 0:
         switch (prm_0) {
@@ -1983,15 +2009,16 @@ int i8255mac_GN80(int prm_0, int prm_1, int prm_2) {
     case 1:
         switch (prm_0) {
         case 0:
-            return data4fddc[0] & 0xFF;
+            retval = data4fddc[0] & 0xFF;
             break;
         case 2:
-            return (data4fddc[2] >> 4) & 0x0F;
+            retval = (data4fddc[2] >> 4) & 0x0F;
             break;
         }
         break;
     }
-    return 0xff;
+    ReleaseSRWLockExclusive(&fddppilock);
+    return retval;
 }
 
 void sendfdcmd28001(int prm_0) {
@@ -3995,7 +4022,9 @@ void ResetEmu() {
         memset(memory, 0, 32768);
     }
 
+    AcquireSRWLockExclusive(&fddppilock);
     memset(data4fddc, 0, sizeof(data4fddc)); // Clear the shared PPI handshake signals.
+    ReleaseSRWLockExclusive(&fddppilock);
     GN8012_i8255.init_i8255();
     GN8012_i8272.init_i8272a();
     GN8012.Reset();
